@@ -47,6 +47,16 @@ AVAILABLE_MODELS = {
             'chat': 'qwen/qwen-2.5-coder-32b-instruct'
         }
     },
+    'codestral-mamba': {
+        'name': 'Qwen 2.5 Coder',
+        'api_key_env': 'OPENROUTER_API_KEY',
+        'client_class': OpenAI,
+        'base_url': 'https://openrouter.ai/api/v1',
+        'models': {
+            'code': 'mistralai/codestral-mamba',
+            'chat': 'mistralai/codestral-mamba'
+        }
+    },
     'claude': {
         'name': 'Claude 3.5 Sonnet',
         'api_key_env': 'ANTHROPIC_API_KEY',
@@ -465,7 +475,59 @@ IMPORTANT: Return the JSON object directly, not inside a code block."""
                 else:
                     print("Qwen response failed, falling back to DeepSeek")
                     return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
-                    
+
+        elif model_id == 'codestral-mamba':
+            try:
+                # Try streaming first
+                response = client.chat.completions.create(
+                    model=model_config['models']['code'],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    stream=True,
+                    max_tokens=4000,
+                    temperature=0.7,
+                    http_referer="https://github.com/danilofalcao",
+                    x_title="J.A.R.V.I.S."
+                )
+                
+                response_chunks = []
+                tokens_received = 0
+                for chunk in response:
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        response_chunks.append(content)
+                        tokens_received += len(content.split())
+                        socketio.emit('progress', {
+                            'message': f'Received {tokens_received} tokens...',
+                            'tokens': tokens_received
+                        })
+                
+                full_text = ''.join(response_chunks)
+                
+            except Exception as codestral_error:
+                print(f"Codestral-Mamba streaming error, trying non-streaming: {str(codestral_error)}")
+                # Fallback to non-streaming request
+                response = client.chat.completions.create(
+                    model=model_config['models']['code'],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": analysis_prompt}
+                    ],
+                    stream=False,
+                    max_tokens=4000,
+                    temperature=0.7,
+                    http_referer="https://github.com/danilofalcao",
+                    x_title="J.A.R.V.I.S."
+                )
+                
+                if response.choices and response.choices[0].message.content:
+                    full_text = response.choices[0].message.content
+                else:
+                    print("Codestral-Mamba response failed, falling back to DeepSeek")
+                    return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
+
         elif model_id == 'claude':
             response = client.messages.create(
                 model=model_config['models']['code'],

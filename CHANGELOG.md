@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.5] - 2024-01-06
+
+### Added
+- Integrated Codestral Mamba model:
+  - High-performance inference capabilities
+  - Enhanced code completion and generation
+  - Improved context understanding
+  - State-of-the-art reasoning abilities
+
 ## [0.0.4] - 2024-01-05
 
 ### Added

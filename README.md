@@ -8,6 +8,7 @@ J.A.R.V.I.S. is an intelligent coding assistant that leverages multiple state-of
   - DeepSeek Coder V3
   - Grok 2
   - Qwen 2.5 Coder
+  - Codestral Mamba
   - Claude 3.5 Sonnet
 
 - **File Attachment Support**:
@@ -99,6 +100,7 @@ J.A.R.V.I.S. is an intelligent coding assistant that leverages multiple state-of
 - **DeepSeek Coder V3**: Specialized in code generation and modification
 - **Grok 2**: Advanced language model for code and natural language
 - **Qwen 2.5 Coder**: Specialized 32B model for code generation
+- **Codestral Mamba**: High-performance model with state-of-the-art reasoning and code generation capabilities
 - **Claude 3.5 Sonnet**: Advanced reasoning and code understanding
 
 ## Contributing
