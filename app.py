@@ -603,8 +603,16 @@ def apply_changes(suggestions, workspace_dir):
     try:
         modified_files = {}
         
+        # Validate workspace directory
+        if not os.path.exists(workspace_dir) or not os.path.isdir(workspace_dir):
+            raise ValueError('Invalid workspace directory')
+            
         # Get the explanation for the overall changes
         overall_explanation = suggestions.get('explanation', 'Changes requested by user')
+        
+        # Validate operations
+        if not isinstance(suggestions.get('operations'), list):
+            raise ValueError('Invalid operations format')
         
         # Process each operation
         for operation in suggestions.get('operations', []):
@@ -783,6 +791,13 @@ def get_file_preview(file_path, max_lines=1000):
 
 def get_existing_files(workspace_dir):
     """Get content of existing files in workspace"""
+    # Validate workspace directory
+    if not os.path.exists(workspace_dir) or not os.path.isdir(workspace_dir):
+        raise ValueError('Invalid workspace directory')
+        
+    # Set maximum file size (50MB)
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    
     files_content = {}
     for root, _, files in os.walk(workspace_dir):
         for file in files:
@@ -794,6 +809,12 @@ def get_existing_files(workspace_dir):
                 file_path = os.path.join(root, file)
                 rel_path = os.path.relpath(file_path, workspace_dir)
                 try:
+                    # Get file size
+                    file_size = os.path.getsize(file_path)
+                    if file_size > MAX_FILE_SIZE:
+                        print(f"Warning: Skipping large file {rel_path} ({file_size} bytes)")
+                        continue
+                        
                     # Check if it's a large file
                     if is_large_file(file_path):
                         # For large files, only get a preview
@@ -1082,6 +1103,15 @@ def get_file_content():
         
         if not workspace_dir or not file_path:
             return jsonify({'error': 'Missing workspace_dir or file_path'}), 400
+            
+        # Validate file path to prevent directory traversal
+        if '..' in file_path or file_path.startswith('/'):
+            return jsonify({'error': 'Invalid file path'}), 400
+            
+        # Ensure the file is within the workspace
+        full_path = os.path.abspath(os.path.join(workspace_dir, file_path))
+        if not full_path.startswith(os.path.abspath(workspace_dir)):
+            return jsonify({'error': 'File path not within workspace'}), 400
             
         full_path = os.path.join(workspace_dir, file_path)
         if not os.path.exists(full_path):
