@@ -639,6 +639,17 @@ async function sendChatMessage() {
     }
 }
 
+function clearChatHistory() {
+    if (confirm('Are you sure you want to clear the chat history?')) {
+        const chatHistory = document.getElementById('chatHistory');
+        if (chatHistory) {
+            chatHistory.innerHTML = '';
+            // Add a system message to indicate the chat was cleared
+            appendChatMessage('Chat history has been cleared.', 'assistant', true);
+        }
+    }
+}
+
 function formatChatResponse(text) {
     // Configure marked options
     marked.setOptions({
