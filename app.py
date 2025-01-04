@@ -10,7 +10,6 @@ import json
 import shutil
 from pathlib import Path
 from datetime import datetime
-import sqlite3
 import difflib
 import re
 from flask_socketio import SocketIO, emit
@@ -144,80 +143,62 @@ load_dotenv()
 WORKSPACE_ROOT = os.path.join(os.getcwd(), 'workspaces')
 os.makedirs(WORKSPACE_ROOT, exist_ok=True)
 
-# Set up database
-DB_PATH = os.path.join(WORKSPACE_ROOT, 'history.db')
-
-def get_db():
-    """Get database connection"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # This enables column access by name
-    return conn
-
-def init_db():
-    """Initialize SQLite database for history tracking"""
-    with get_db() as conn:
-        c = conn.cursor()
-        # Create workspaces table
-        c.execute('''CREATE TABLE IF NOT EXISTS workspaces
-                    (id TEXT PRIMARY KEY,
-                     path TEXT NOT NULL,
-                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        
-        # Create file_history table
-        c.execute('''CREATE TABLE IF NOT EXISTS file_history
-                    (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                     workspace_id TEXT NOT NULL,
-                     file_path TEXT NOT NULL,
-                     content TEXT NOT NULL,
-                     explanation TEXT,
-                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                     FOREIGN KEY(workspace_id) REFERENCES workspaces(id))''')
-        conn.commit()
-
 def create_workspace():
     """Create a new workspace directory"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     workspace_id = timestamp
     workspace_path = os.path.join(WORKSPACE_ROOT, workspace_id)
     os.makedirs(workspace_path, exist_ok=True)
-    
-    # Record in database
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute('INSERT INTO workspaces (id, path) VALUES (?, ?)',
-                 (workspace_id, workspace_path))
-        conn.commit()
-    
     return workspace_id, workspace_path
 
 def get_workspace_history():
     """Get list of all workspaces with their history"""
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute('SELECT w.id, w.path, w.created_at FROM workspaces w ORDER BY w.created_at DESC')
-        workspaces = [dict(row) for row in c.fetchall()]
-        
-        # Count actual files in each workspace directory
-        for workspace in workspaces:
-            file_count = 0
-            workspace_path = workspace['path']
-            if os.path.exists(workspace_path):
-                for root, _, files in os.walk(workspace_path):
-                    # Exclude database files and hidden files
-                    file_count += sum(1 for f in files if not f.endswith('.db') and not f.startswith('.'))
-            workspace['file_count'] = file_count
+    workspaces = []
+    
+    # List all directories in WORKSPACE_ROOT
+    for item in os.listdir(WORKSPACE_ROOT):
+        workspace_path = os.path.join(WORKSPACE_ROOT, item)
+        if os.path.isdir(workspace_path):
+            # Get directory creation time
+            created_at = datetime.fromtimestamp(os.path.getctime(workspace_path))
             
-        return workspaces
+            # Count files in workspace
+            file_count = 0
+            for root, _, files in os.walk(workspace_path):
+                # Exclude hidden files
+                file_count += sum(1 for f in files if not f.startswith('.'))
+            
+            workspaces.append({
+                'id': item,
+                'path': workspace_path,
+                'created_at': created_at.isoformat(),
+                'file_count': file_count
+            })
+    
+    # Sort by creation time, newest first
+    return sorted(workspaces, key=lambda x: x['created_at'], reverse=True)
 
-def record_file_change(workspace_id, file_path, content, explanation):
-    """Record file change in history"""
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute('''INSERT INTO file_history 
-                    (workspace_id, file_path, content, explanation)
-                    VALUES (?, ?, ?, ?)''',
-                 (workspace_id, file_path, content, explanation))
-        conn.commit()
+def delete_workspace(workspace_id):
+    """Delete a workspace"""
+    try:
+        workspace_path = os.path.join(WORKSPACE_ROOT, workspace_id)
+        
+        # Verify the path is within WORKSPACE_ROOT for safety
+        if not os.path.abspath(workspace_path).startswith(os.path.abspath(WORKSPACE_ROOT)):
+            raise Exception("Invalid workspace path")
+        
+        # Delete directory
+        try:
+            if os.path.exists(workspace_path):
+                shutil.rmtree(workspace_path, ignore_errors=False)
+            if os.path.exists(workspace_path):
+                raise Exception("Failed to delete workspace directory")
+        except Exception as e:
+            raise Exception(f"Failed to delete workspace directory: {str(e)}")
+        
+        return True
+    except Exception as e:
+        raise Exception(f"Failed to delete workspace: {str(e)}")
 
 def get_workspace_structure(workspace_dir):
     """Get the folder structure of the workspace"""
@@ -231,16 +212,17 @@ def get_workspace_structure(workspace_dir):
             
         # Add directories
         for dir_name in dirs:
-            full_path = os.path.join(rel_path, dir_name)
-            structure.append({
-                'type': 'directory',
-                'path': full_path,
-                'name': dir_name
-            })
+            if not dir_name.startswith('.'):  # Skip hidden directories
+                full_path = os.path.join(rel_path, dir_name)
+                structure.append({
+                    'type': 'directory',
+                    'path': full_path,
+                    'name': dir_name
+                })
             
         # Add files
         for file_name in files:
-            if not file_name.endswith('.db'):  # Skip database files
+            if not file_name.startswith('.'):  # Skip hidden files
                 full_path = os.path.join(rel_path, file_name)
                 structure.append({
                     'type': 'file',
@@ -249,532 +231,6 @@ def get_workspace_structure(workspace_dir):
                 })
     
     return sorted(structure, key=lambda x: (x['type'] == 'file', x['path']))
-
-def reconstruct_json_from_stream(chunks):
-    """Reconstruct JSON from streamed chunks"""
-    # Join all chunks
-    full_text = ''.join(chunk for chunk in chunks if isinstance(chunk, str))
-    
-    # Try to find complete JSON object
-    json_start = full_text.find('{')
-    json_end = full_text.rfind('}') + 1
-    
-    if json_start == -1 or json_end <= json_start:
-        raise Exception("No complete JSON object found in response")
-    
-    # Extract the JSON part
-    json_text = full_text[json_start:json_end]
-    
-    # Clean up the JSON
-    # Fix string escaping issues
-    json_text = re.sub(r'(?<!\\)"([^"]*?)(?<!\\)"(?=:)', r'"\1"', json_text)  # Fix key quotes
-    json_text = re.sub(r':\s*"([^"]*?)(?<!\\)"(?=,|})', r':"\1"', json_text)  # Fix value quotes
-    
-    # Handle multiline strings properly
-    def escape_multiline(match):
-        content = match.group(1)
-        # Escape newlines and quotes
-        content = content.replace('\n', '\\n').replace('"', '\\"')
-        return f'"{content}"'
-    
-    json_text = re.sub(r'"((?:[^"\\]|\\.|\n)*)"', escape_multiline, json_text)
-    
-    # Remove any control characters
-    json_text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', json_text)
-    
-    # Fix common JSON formatting issues
-    json_text = re.sub(r',\s*}$', '}', json_text)  # Remove trailing comma before }
-    json_text = re.sub(r',\s*]$', ']', json_text)  # Remove trailing comma before ]
-    json_text = re.sub(r'(?<=\{|\[|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', json_text)  # Quote unquoted keys
-    
-    try:
-        # Try to parse the cleaned JSON
-        return json.loads(json_text)
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse JSON: {str(e)}")
-        print(f"Problematic JSON: {json_text}")
-        
-        # Try one more time with a more aggressive cleaning
-        try:
-            # Replace problematic characters in string values
-            json_text = re.sub(r':\s*"([^"]*)"', lambda m: f':{json.dumps(m.group(1))}', json_text)
-            return json.loads(json_text)
-        except json.JSONDecodeError as e2:
-            print(f"Second attempt failed: {str(e2)}")
-            raise
-
-def process_streamed_response(response_chunks, files_content):
-    """Process streamed response chunks and handle file comparisons"""
-    # Join all chunks
-    full_text = ''.join(chunk for chunk in response_chunks if isinstance(chunk, str))
-    
-    try:
-        # First try to parse the entire response as JSON
-        try:
-            result = json.loads(full_text)
-            if isinstance(result, dict) and 'operations' in result:
-                return result
-        except:
-            pass
-        
-        # Try to find JSON in code blocks
-        json_matches = re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', full_text)
-        for match in json_matches:
-            try:
-                json_str = match.group(1).strip()
-                result = json.loads(json_str)
-                if isinstance(result, dict) and 'operations' in result:
-                    return result
-            except:
-                continue
-        
-        # Try to find any JSON object in the response
-        json_matches = re.finditer(r'\{[\s\S]*?\}', full_text)
-        for match in json_matches:
-            try:
-                json_str = match.group(0).strip()
-                result = json.loads(json_str)
-                if isinstance(result, dict) and 'operations' in result:
-                    return result
-            except:
-                continue
-        
-        print(f"Failed to parse response. Preview:\n{full_text[:1000]}")
-        raise Exception("No valid JSON object found in response")
-    except Exception as e:
-        print(f"Error processing response: {str(e)}")
-        raise
-
-def clean_json_text(json_text):
-    """Clean and format JSON text for parsing"""
-    # First, normalize line endings and remove any null bytes
-    json_text = json_text.replace('\0', '').replace('\r\n', '\n').replace('\r', '\n')
-    
-    # Handle multiline strings properly
-    def escape_multiline(match):
-        content = match.group(1)
-        # Escape special characters
-        content = content.replace('\\', '\\\\')  # Must be first
-        content = content.replace('\n', '\\n')
-        content = content.replace('\t', '\\t')
-        content = content.replace('"', '\\"')
-        return f'"{content}"'
-    
-    # Fix string values, handling both single and multiline
-    json_text = re.sub(r'"((?:[^"\\]|\\.|\n)*)"', escape_multiline, json_text)
-    
-    # Remove any control characters except newlines and tabs
-    json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', '', json_text)
-    
-    # Fix common JSON formatting issues
-    json_text = re.sub(r',\s*}$', '}', json_text)  # Remove trailing comma before }
-    json_text = re.sub(r',\s*]$', ']', json_text)  # Remove trailing comma before ]
-    json_text = re.sub(r'(?<=\{|\[|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', json_text)  # Quote unquoted keys
-    
-    return json_text
-
-def generate_diff(current_content, new_content, file_path):
-    """Generate a clean diff between current and new content"""
-    current_lines = current_content.splitlines()
-    new_lines = new_content.splitlines()
-    
-    diff_lines = list(difflib.unified_diff(
-        current_lines,
-        new_lines,
-        fromfile=f'a/{file_path}',
-        tofile=f'b/{file_path}',
-        lineterm=''
-    ))
-    
-    return '\n'.join(diff_lines)
-
-def get_code_suggestion(prompt, files_content=None, workspace_context=None, model_id='deepseek'):
-    """Get code suggestions from the selected AI model"""
-    if model_id not in model_clients:
-        raise Exception(f"Model {model_id} is not configured. Please check your API keys.")
-        
-    client = model_clients[model_id]
-    model_config = AVAILABLE_MODELS[model_id]
-    
-    try:
-        socketio.emit('status', {'message': 'Analyzing files...', 'step': 1})
-        print("\n=== Step 1: Analyzing files ===")
-        # First send all files to AI for analysis
-        files_list = []
-        for file_path, content in files_content.items():
-            files_list.append(f"File: {file_path}\nContent:\n{content}\n")
-        
-        analysis_prompt = f"""Based on this request: {prompt}
-
-Here are all the files in the workspace:
-
-{chr(10).join(files_list)}
-
-Analyze these files and determine:
-1. Which files need to be modified
-2. What specific changes are needed in each file
-3. Whether any new files need to be created
-4. Whether any files need to be deleted
-
-Return a JSON object with the operations needed. Only include files that actually need changes.
-Do not include files in the operations if they don't need modifications.
-
-IMPORTANT: Return the JSON object directly, not inside a code block."""
-
-        socketio.emit('status', {'message': 'Sending request to AI...', 'step': 2})
-        print("\nSending analysis request...")
-        
-        if model_id == 'qwen':
-            try:
-                # Try streaming first
-                response = client.chat.completions.create(
-                    model=model_config['models']['code'],
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    stream=True,
-                    max_tokens=4000,
-                    temperature=0.7,
-                    http_referer="https://github.com/danilofalcao",
-                    x_title="J.A.R.V.I.S."
-                )
-                
-                response_chunks = []
-                tokens_received = 0
-                for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        response_chunks.append(content)
-                        tokens_received += len(content.split())
-                        socketio.emit('progress', {
-                            'message': f'Received {tokens_received} tokens...',
-                            'tokens': tokens_received
-                        })
-                
-                full_text = ''.join(response_chunks)
-                
-            except Exception as qwen_error:
-                print(f"Qwen streaming error, trying non-streaming: {str(qwen_error)}")
-                # Fallback to non-streaming request
-                response = client.chat.completions.create(
-                    model=model_config['models']['code'],
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    stream=False,
-                    max_tokens=4000,
-                    temperature=0.7,
-                    http_referer="https://github.com/danilofalcao",
-                    x_title="J.A.R.V.I.S."
-                )
-                
-                if response.choices and response.choices[0].message.content:
-                    full_text = response.choices[0].message.content
-                else:
-                    print("Qwen response failed, falling back to DeepSeek")
-                    return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
-
-        elif model_id == 'codestral-mamba':
-            try:
-                # Add format instructions to the system prompt
-                mamba_system_prompt = system_prompt + "\nIMPORTANT: Your response must be a valid JSON object with 'explanation' and 'operations' fields."
-                
-                response = client.chat.completions.create(
-                    model=model_config['models']['code'],
-                    messages=[
-                        {"role": "system", "content": mamba_system_prompt},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    stream=False,
-                    max_tokens=4000,
-                    temperature=0.7
-                )
-                
-                if response.choices and response.choices[0].message.content:
-                    full_text = response.choices[0].message.content
-                    # Try to parse and validate the response
-                    try:
-                        result = json.loads(full_text)
-                        if not isinstance(result, dict) or 'operations' not in result:
-                            # Add missing fields if needed
-                            if not isinstance(result, dict):
-                                result = {"operations": []}
-                            if 'explanation' not in result:
-                                result['explanation'] = "Changes requested by the user"
-                            full_text = json.dumps(result)
-                    except json.JSONDecodeError:
-                        print("Invalid JSON from Codestral-Mamba, falling back to DeepSeek")
-                        return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
-                else:
-                    print("Empty response from Codestral-Mamba, falling back to DeepSeek")
-                    return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
-                    
-            except Exception as codestral_error:
-                print(f"Codestral-Mamba error: {str(codestral_error)}")
-                print("Falling back to DeepSeek")
-                return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
-
-        elif model_id == 'claude':
-            response = client.messages.create(
-                model=model_config['models']['code'],
-                system=system_prompt,
-                messages=[{"role": "user", "content": analysis_prompt}],
-                temperature=0.7,
-                max_tokens=4096
-            )
-            # Claude doesn't need streaming for this use case
-            response_chunks = [response.content[0].text]
-            full_text = ''.join(response_chunks)
-        else:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": analysis_prompt}
-            ]
-            
-            response = client.chat.completions.create(
-                model=model_config['models']['code'],
-                messages=messages,
-                temperature=0.7,
-                stream=True
-            )
-            
-            response_chunks = []
-            tokens_received = 0
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    response_chunks.append(content)
-                    tokens_received += len(content.split())
-                    socketio.emit('progress', {
-                        'message': f'Received {tokens_received} tokens...',
-                        'tokens': tokens_received
-                    })
-            full_text = ''.join(response_chunks)
-        
-        socketio.emit('status', {'message': 'Processing AI response...', 'step': 3})
-        print("\n=== Step 2: Processing response ===")
-        print("\nFull response length:", len(full_text))
-        print("\nFirst 500 chars:", full_text[:500])
-        
-        # Try to parse the response in different ways
-        result = None
-        try:
-            # First try direct JSON parsing
-            result = json.loads(full_text)
-            if isinstance(result, dict) and 'operations' in result:
-                return result
-        except json.JSONDecodeError:
-            pass
-
-        # Try to extract JSON from code blocks
-        if not result:
-            matches = re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', full_text)
-            for match in matches:
-                try:
-                    json_str = match.group(1).strip()
-                    result = json.loads(json_str)
-                    if isinstance(result, dict) and 'operations' in result:
-                        return result
-                except:
-                    continue
-        
-        # Try to find any JSON object
-        if not result:
-            matches = re.finditer(r'\{[\s\S]*?\}', full_text)
-            for match in matches:
-                try:
-                    json_str = match.group(0).strip()
-                    result = json.loads(json_str)
-                    if isinstance(result, dict) and 'operations' in result:
-                        return result
-                except:
-                    continue
-        
-        if not result:
-            raise ValueError("Could not find valid JSON response")
-        
-        return result
-        
-    except Exception as e:
-        socketio.emit('status', {'message': f'Error: {str(e)}', 'step': -1})
-        print(f"\nError getting code suggestion: {str(e)}")
-        raise
-
-def get_workspace_context(workspace_dir):
-    """Get a description of the workspace context"""
-    structure = get_workspace_structure(workspace_dir)
-    files_content = get_existing_files(workspace_dir)
-    
-    context = "Workspace Structure:\n"
-    for item in structure:
-        prefix = "📁 " if item['type'] == 'directory' else " "
-        context += f"{prefix}{item['path']}\n"
-    
-    context += "\nFile Relationships and Dependencies:\n"
-    # Analyze imports and dependencies
-    dependencies = analyze_dependencies(files_content)
-    for file, deps in dependencies.items():
-        if deps:
-            context += f"{file} depends on: {', '.join(deps)}\n"
-    
-    return context
-
-def analyze_dependencies(files_content):
-    """Analyze file dependencies based on imports and references"""
-    dependencies = {}
-    import_patterns = {
-        '.py': ['import ', 'from '],
-        '.js': ['import ', 'require('],
-        '.html': ['<script src=', '<link href='],
-    }
-    
-    for file_path, content in files_content.items():
-        ext = os.path.splitext(file_path)[1]
-        deps = set()
-        
-        if ext in import_patterns:
-            lines = content.split('\n')
-            for line in lines:
-                for pattern in import_patterns[ext]:
-                    if pattern in line:
-                        # Extract dependency name (simplified)
-                        dep = line.split(pattern)[-1].split()[0].strip('"\';')
-                        deps.add(dep)
-        
-        dependencies[file_path] = deps
-    
-    return dependencies
-
-
-def apply_changes(suggestions, workspace_dir):
-    """Apply code changes based on the operations in the response"""
-    try:
-        modified_files = {}
-        
-        # Validate workspace directory
-        if not os.path.exists(workspace_dir) or not os.path.isdir(workspace_dir):
-            raise ValueError('Invalid workspace directory')
-            
-        # Get the explanation for the overall changes
-        overall_explanation = suggestions.get('explanation', 'Changes requested by user')
-        
-        # Validate operations
-        if not isinstance(suggestions.get('operations'), list):
-            raise ValueError('Invalid operations format')
-        
-        # Process each operation
-        for operation in suggestions.get('operations', []):
-            op_type = operation.get('type')
-            path = operation.get('path')
-            if not path:
-                continue
-                
-            full_path = os.path.join(workspace_dir, path)
-            rel_path = os.path.relpath(full_path, workspace_dir)
-            
-            if op_type == 'remove_directory':
-                if os.path.exists(full_path) and os.path.isdir(full_path):
-                    recursive = operation.get('recursive', False)
-                    if recursive:
-                        shutil.rmtree(full_path)
-                    else:
-                        os.rmdir(full_path)
-                        
-            elif op_type == 'remove_file':
-                if os.path.exists(full_path):
-                    os.remove(full_path)
-                    
-            elif op_type == 'rename_file':
-                new_path = operation.get('new_path')
-                if new_path and os.path.exists(full_path):
-                    new_full_path = os.path.join(workspace_dir, new_path)
-                    os.makedirs(os.path.dirname(new_full_path), exist_ok=True)
-                    os.rename(full_path, new_full_path)
-                    
-            elif op_type in ['create_file', 'edit_file']:
-                explanation = operation.get('explanation', '')
-                
-                # Create directory if it doesn't exist
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                
-                # Get current content if file exists
-                current_content = ''
-                if os.path.exists(full_path):
-                    with open(full_path, 'r', encoding='utf-8') as f:
-                        current_content = f.read()
-                
-                # Determine new content
-                if op_type == 'create_file':
-                    new_content = operation.get('content', '')
-                else:  # edit_file
-                    if 'changes' in operation:
-                        # Apply each change in sequence
-                        new_content = current_content
-                        for change in operation['changes']:
-                            old_text = change.get('old', '')
-                            new_text = change.get('new', '')
-                            new_content = new_content.replace(old_text, new_text)
-                    else:
-                        new_content = operation.get('content', current_content)
-                
-                # Ensure content ends with newline
-                if new_content and not new_content.endswith('\n'):
-                    new_content += '\n'
-                
-                # Write the content
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                
-                # Generate diff
-                if current_content:
-                    print(f"Generating diff for modified file: {rel_path}")
-                    current_lines = current_content.splitlines()
-                    new_lines = new_content.splitlines()
-                    
-                    diff_lines = list(difflib.unified_diff(
-                        current_lines,
-                        new_lines,
-                        fromfile=f'a/{rel_path}',
-                        tofile=f'b/{rel_path}',
-                        lineterm=''
-                    ))
-                    
-                    if not diff_lines and current_content != new_content:
-                        diff_lines = [
-                            f'--- a/{rel_path}',
-                            f'+++ b/{rel_path}',
-                            f'@@ -1,{len(current_lines)} +1,{len(new_lines)} @@'
-                        ]
-                        for line in current_lines:
-                            diff_lines.append('-' + line)
-                        for line in new_lines:
-                            diff_lines.append('+' + line)
-                else:
-                    print(f"Generating diff for new file: {rel_path}")
-                    new_lines = new_content.splitlines()
-                    diff_lines = [
-                        f'--- /dev/null',
-                        f'+++ b/{rel_path}',
-                        f'@@ -0,0 +1,{len(new_lines)} @@'
-                    ]
-                    diff_lines.extend('+' + line for line in new_lines)
-                
-                diff = '\n'.join(diff_lines)
-                
-                # Store the file info
-                modified_files[rel_path] = {
-                    'content': new_content,
-                    'explanation': explanation,
-                    'diff': diff,
-                    'is_new': not os.path.exists(full_path) or op_type == 'create_file'
-                }
-        
-        return modified_files
-        
-    except Exception as e:
-        raise Exception(f"Failed to apply changes: {str(e)}")
 
 def get_file_size(file_path):
     """Get the size of a file in bytes"""
@@ -897,39 +353,6 @@ def get_existing_files(workspace_dir):
                     continue
     return files_content
 
-def delete_workspace(workspace_id):
-    """Delete a workspace and its records from database"""
-    try:
-        with get_db() as conn:
-            c = conn.cursor()
-            
-            # Get workspace path first
-            c.execute('SELECT path FROM workspaces WHERE id = ?', (workspace_id,))
-            result = c.fetchone()
-            if not result:
-                raise Exception("Workspace not found")
-            
-            workspace_path = result['path']
-            
-            # Delete directory first
-            if os.path.exists(workspace_path):
-                shutil.rmtree(workspace_path)
-            
-            # Then delete from database
-            c.execute('DELETE FROM file_history WHERE workspace_id = ?', (workspace_id,))
-            c.execute('DELETE FROM workspaces WHERE id = ?', (workspace_id,))
-            conn.commit()
-            
-            return True
-    except Exception as e:
-        # If database deletion fails but directory was deleted, try to recreate empty directory
-        if not os.path.exists(workspace_path):
-            try:
-                os.makedirs(workspace_path)
-            except:
-                pass
-        raise Exception(f"Failed to delete workspace: {str(e)}")
-
 @app.route('/')
 def index():
     return render_template('base.html')
@@ -964,7 +387,6 @@ def get_history():
             'status': 'error',
             'message': str(e)
         }), 500
-
 
 @app.route('/workspace/structure', methods=['POST'])
 def get_structure():
@@ -1209,41 +631,30 @@ def rename_workspace():
         }), 400
     
     try:
-        # Get current workspace path
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute('SELECT path FROM workspaces WHERE id = ?', (workspace_id,))
-            result = c.fetchone()
-            
-            if not result:
-                return jsonify({
-                    'status': 'error',
-                    'message': 'Workspace not found'
-                }), 404
-            
-            old_path = result['path']
-            new_path = os.path.join(WORKSPACE_ROOT, new_name)
-            
-            # Check if new name already exists
-            if os.path.exists(new_path):
-                return jsonify({
-                    'status': 'error',
-                    'message': 'A workspace with this name already exists'
-                }), 400
-            
-            # Rename directory
-            os.rename(old_path, new_path)
-            
-            # Update database
-            c.execute('UPDATE workspaces SET id = ?, path = ? WHERE id = ?',
-                     (new_name, new_path, workspace_id))
-            conn.commit()
-            
+        old_path = os.path.join(WORKSPACE_ROOT, workspace_id)
+        new_path = os.path.join(WORKSPACE_ROOT, new_name)
+        
+        # Check if source exists and target doesn't
+        if not os.path.exists(old_path):
             return jsonify({
-                'status': 'success',
-                'message': 'Workspace renamed successfully',
-                'new_path': new_path
-            })
+                'status': 'error',
+                'message': 'Workspace not found'
+            }), 404
+            
+        if os.path.exists(new_path):
+            return jsonify({
+                'status': 'error',
+                'message': 'A workspace with this name already exists'
+            }), 400
+        
+        # Rename directory
+        os.rename(old_path, new_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Workspace renamed successfully',
+            'new_path': new_path
+        })
             
     except Exception as e:
         return jsonify({
@@ -1405,19 +816,10 @@ def apply_approved_changes():
             'operations': operations
         }, workspace_dir)
         
-        # Record changes in history
-        workspace_id = os.path.basename(workspace_dir)
-        for file_path, file_data in modified_files.items():
-            record_file_change(
-                workspace_id,
-                file_path,
-                file_data['content'],
-                file_data['explanation']
-            )
-        
         structure = get_workspace_structure(workspace_dir)
         
         # Notify all clients about the changes
+        workspace_id = os.path.basename(workspace_dir)
         socketio.emit('changes_applied', {
             'workspace_id': workspace_id,
             'modified_files': list(modified_files.keys())
@@ -1443,9 +845,6 @@ def utility_processor():
     }
 
 if __name__ == '__main__':
-    # Initialize database before starting the app
-    init_db()
-    
     # Watch static and template directories for changes
     extra_files = []
     for root, dirs, files in os.walk('static'):

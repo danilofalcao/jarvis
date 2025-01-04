@@ -56,7 +56,6 @@ J.A.R.V.I.S. is an intelligent coding assistant that leverages multiple state-of
   - Flask web framework
   - Flask-SocketIO for WebSocket support
   - Eventlet for async operations
-  - SQLite for workspace history
 
 - **Frontend**:
   - Pure JavaScript
