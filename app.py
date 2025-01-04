@@ -574,23 +574,39 @@ def get_file_content():
         file_path = data.get('file_path')
         
         if not workspace_dir or not file_path:
-            return jsonify({'error': 'Missing workspace_dir or file_path'}), 400
+            return jsonify({
+                'status': 'error',
+                'message': 'Missing workspace_dir or file_path'
+            }), 400
+            
+        # Validate workspace directory
+        if not os.path.exists(workspace_dir):
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid workspace directory'
+            }), 400
             
         # Validate file path to prevent directory traversal
         if '..' in file_path or file_path.startswith('/'):
-            return jsonify({'error': 'Invalid file path'}), 400
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid file path'
+            }), 400
             
         # Ensure the file is within the workspace
         full_path = os.path.abspath(os.path.join(workspace_dir, file_path))
         if not full_path.startswith(os.path.abspath(workspace_dir)):
-            return jsonify({'error': 'File path not within workspace'}), 400
+            return jsonify({
+                'status': 'error',
+                'message': 'File path not within workspace'
+            }), 400
             
         full_path = os.path.join(workspace_dir, file_path)
         if not os.path.exists(full_path):
             return jsonify({
-                'status': 'success',
-                'content': ''  # Return empty content for new files
-            })
+                'status': 'error',
+                'message': 'File not found'
+            }), 404
         
         # Check if it's a large file
         if is_large_file(full_path):
@@ -843,6 +859,300 @@ def utility_processor():
     return {
         'cache_buster': str(int(datetime.now().timestamp()))
     }
+
+def get_workspace_context(workspace_dir):
+    """Get a description of the workspace context"""
+    structure = get_workspace_structure(workspace_dir)
+    files_content = get_existing_files(workspace_dir)
+    
+    context = "Workspace Structure:\n"
+    for item in structure:
+        prefix = "📁 " if item['type'] == 'directory' else " "
+        context += f"{prefix}{item['path']}\n"
+    
+    context += "\nFile Relationships and Dependencies:\n"
+    # Analyze imports and dependencies
+    dependencies = analyze_dependencies(files_content)
+    for file, deps in dependencies.items():
+        if deps:
+            context += f"{file} depends on: {', '.join(deps)}\n"
+    
+    return context
+
+def analyze_dependencies(files_content):
+    """Analyze file dependencies based on imports and references"""
+    dependencies = {}
+    import_patterns = {
+        '.py': ['import ', 'from '],
+        '.js': ['import ', 'require('],
+        '.html': ['<script src=', '<link href='],
+    }
+    
+    for file_path, content in files_content.items():
+        ext = os.path.splitext(file_path)[1]
+        deps = set()
+        
+        if ext in import_patterns:
+            lines = content.split('\n')
+            for line in lines:
+                for pattern in import_patterns[ext]:
+                    if pattern in line:
+                        # Extract dependency name (simplified)
+                        dep = line.split(pattern)[-1].split()[0].strip('"\';')
+                        deps.add(dep)
+        
+        dependencies[file_path] = deps
+    
+    return dependencies
+
+def apply_changes(suggestions, workspace_dir):
+    """Apply code changes based on the operations in the response"""
+    try:
+        modified_files = {}
+        
+        # Validate workspace directory
+        if not os.path.exists(workspace_dir) or not os.path.isdir(workspace_dir):
+            raise ValueError('Invalid workspace directory')
+            
+        # Get the explanation for the overall changes
+        overall_explanation = suggestions.get('explanation', 'Changes requested by user')
+        
+        # Validate operations
+        if not isinstance(suggestions.get('operations'), list):
+            raise ValueError('Invalid operations format')
+        
+        # Process each operation
+        for operation in suggestions.get('operations', []):
+            op_type = operation.get('type')
+            path = operation.get('path')
+            if not path:
+                continue
+                
+            full_path = os.path.join(workspace_dir, path)
+            rel_path = os.path.relpath(full_path, workspace_dir)
+            
+            if op_type == 'remove_directory':
+                if os.path.exists(full_path) and os.path.isdir(full_path):
+                    recursive = operation.get('recursive', False)
+                    if recursive:
+                        shutil.rmtree(full_path)
+                    else:
+                        os.rmdir(full_path)
+                        
+            elif op_type == 'remove_file':
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+                    
+            elif op_type == 'rename_file':
+                new_path = operation.get('new_path')
+                if new_path and os.path.exists(full_path):
+                    new_full_path = os.path.join(workspace_dir, new_path)
+                    os.makedirs(os.path.dirname(new_full_path), exist_ok=True)
+                    os.rename(full_path, new_full_path)
+                    
+            elif op_type in ['create_file', 'edit_file']:
+                explanation = operation.get('explanation', '')
+                
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                
+                # Get current content if file exists
+                current_content = ''
+                if os.path.exists(full_path):
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        current_content = f.read()
+                
+                # Determine new content
+                if op_type == 'create_file':
+                    new_content = operation.get('content', '')
+                else:  # edit_file
+                    if 'changes' in operation:
+                        # Apply each change in sequence
+                        new_content = current_content
+                        for change in operation['changes']:
+                            old_text = change.get('old', '')
+                            new_text = change.get('new', '')
+                            new_content = new_content.replace(old_text, new_text)
+                    else:
+                        new_content = operation.get('content', current_content)
+                
+                # Ensure content ends with newline
+                if new_content and not new_content.endswith('\n'):
+                    new_content += '\n'
+                
+                # Write the content
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                
+                # Generate diff
+                if current_content:
+                    print(f"Generating diff for modified file: {rel_path}")
+                    current_lines = current_content.splitlines()
+                    new_lines = new_content.splitlines()
+                    
+                    diff_lines = list(difflib.unified_diff(
+                        current_lines,
+                        new_lines,
+                        fromfile=f'a/{rel_path}',
+                        tofile=f'b/{rel_path}',
+                        lineterm=''
+                    ))
+                    
+                    if not diff_lines and current_content != new_content:
+                        diff_lines = [
+                            f'--- a/{rel_path}',
+                            f'+++ b/{rel_path}',
+                            f'@@ -1,{len(current_lines)} +1,{len(new_lines)} @@'
+                        ]
+                        for line in current_lines:
+                            diff_lines.append('-' + line)
+                        for line in new_lines:
+                            diff_lines.append('+' + line)
+                else:
+                    print(f"Generating diff for new file: {rel_path}")
+                    new_lines = new_content.splitlines()
+                    diff_lines = [
+                        f'--- /dev/null',
+                        f'+++ b/{rel_path}',
+                        f'@@ -0,0 +1,{len(new_lines)} @@'
+                    ]
+                    diff_lines.extend('+' + line for line in new_lines)
+                
+                diff = '\n'.join(diff_lines)
+                
+                # Store the file info
+                modified_files[rel_path] = {
+                    'content': new_content,
+                    'explanation': explanation,
+                    'diff': diff,
+                    'is_new': not os.path.exists(full_path) or op_type == 'create_file'
+                }
+        
+        return modified_files
+        
+    except Exception as e:
+        raise Exception(f"Failed to apply changes: {str(e)}")
+
+def get_code_suggestion(prompt, files_content=None, workspace_context=None, model_id='deepseek'):
+    """Get code suggestions from the selected AI model"""
+    if model_id not in model_clients:
+        raise Exception(f"Model {model_id} is not configured. Please check your API keys.")
+        
+    client = model_clients[model_id]
+    model_config = AVAILABLE_MODELS[model_id]
+    
+    try:
+        socketio.emit('status', {'message': 'Analyzing files...', 'step': 1})
+        print("\n=== Step 1: Analyzing files ===")
+        # First send all files to AI for analysis
+        files_list = []
+        for file_path, content in files_content.items():
+            files_list.append(f"File: {file_path}\nContent:\n{content}\n")
+        
+        analysis_prompt = f"""Based on this request: {prompt}
+
+Here are all the files in the workspace:
+
+{chr(10).join(files_list)}
+
+Analyze these files and determine:
+1. Which files need to be modified
+2. What specific changes are needed in each file
+3. Whether any new files need to be created
+4. Whether any files need to be deleted
+
+Return a JSON object with the operations needed. Only include files that actually need changes.
+Do not include files in the operations if they don't need modifications.
+
+IMPORTANT: Return the JSON object directly, not inside a code block."""
+
+        socketio.emit('status', {'message': 'Sending request to AI...', 'step': 2})
+        print("\nSending analysis request...")
+        
+        if model_id == 'claude':
+            response = client.messages.create(
+                model=model_config['models']['code'],
+                system=system_prompt,
+                messages=[{"role": "user", "content": analysis_prompt}],
+                temperature=0.7,
+                max_tokens=4096
+            )
+            # Claude doesn't need streaming for this use case
+            full_text = response.content[0].text
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": analysis_prompt}
+            ]
+            
+            response = client.chat.completions.create(
+                model=model_config['models']['code'],
+                messages=messages,
+                temperature=0.7,
+                stream=True
+            )
+            
+            response_chunks = []
+            tokens_received = 0
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    response_chunks.append(content)
+                    tokens_received += len(content.split())
+                    socketio.emit('progress', {
+                        'message': f'Received {tokens_received} tokens...',
+                        'tokens': tokens_received
+                    })
+            full_text = ''.join(response_chunks)
+        
+        socketio.emit('status', {'message': 'Processing AI response...', 'step': 3})
+        print("\n=== Step 2: Processing response ===")
+        print("\nFull response length:", len(full_text))
+        print("\nFirst 500 chars:", full_text[:500])
+        
+        # Try to parse the response in different ways
+        result = None
+        try:
+            # First try direct JSON parsing
+            result = json.loads(full_text)
+            if isinstance(result, dict) and 'operations' in result:
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from code blocks
+        if not result:
+            matches = re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', full_text)
+            for match in matches:
+                try:
+                    json_str = match.group(1).strip()
+                    result = json.loads(json_str)
+                    if isinstance(result, dict) and 'operations' in result:
+                        return result
+                except:
+                    continue
+        
+        # Try to find any JSON object
+        if not result:
+            matches = re.finditer(r'\{[\s\S]*?\}', full_text)
+            for match in matches:
+                try:
+                    json_str = match.group(0).strip()
+                    result = json.loads(json_str)
+                    if isinstance(result, dict) and 'operations' in result:
+                        return result
+                except:
+                    continue
+        
+        if not result:
+            raise ValueError("Could not find valid JSON response")
+        
+        return result
+        
+    except Exception as e:
+        socketio.emit('status', {'message': f'Error: {str(e)}', 'step': -1})
+        print(f"\nError getting code suggestion: {str(e)}")
+        raise
 
 if __name__ == '__main__':
     # Watch static and template directories for changes

@@ -270,30 +270,24 @@ body {
 
 /* Modal Styling */
 .modal-content {
-    position: relative;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .modal-header {
+    padding: 1.5rem;
     border-bottom: 1px solid var(--border-color);
-    padding: 1.25rem;
-    background: var(--bg-panel);
-    border-radius: 12px 12px 0 0;
 }
 
 .modal-body {
-    padding: 1.25rem;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--bg-hover) var(--bg-dark);
+    padding: 1.5rem;
 }
 
 .modal-footer {
+    padding: 1rem 1.5rem;
     border-top: 1px solid var(--border-color);
-    padding: 1.25rem;
     background: var(--bg-panel);
-    border-radius: 0 0 12px 12px;
-    z-index: 10;
 }
 
 .modal-footer .btn {
@@ -431,4 +425,58 @@ textarea {
 textarea:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 2px var(--primary-hover);
+}
+
+/* Code Review Styling */
+#changesPreview {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+#changesPreview .CodeMirror {
+    height: auto !important;
+    max-height: 500px;
+    margin: 0;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+#changesPreview pre {
+    margin: 0;
+    padding: 0;
+}
+
+#changesPreview .language-diff .cm-positive {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+}
+
+#changesPreview .language-diff .cm-negative {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.1);
+}
+
+#changesPreview .language-diff .cm-meta {
+    color: #94a3b8;
+}
+
+/* Operation Header Styling */
+.operation-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-hover);
+    border-radius: 4px;
+}
+
+.operation-header i {
+    font-size: 1.25rem;
+    color: var(--primary);
+}
+
+.operation-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 500;
 } 

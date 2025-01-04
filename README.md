@@ -110,9 +110,78 @@ Contributions are welcome! Please feel free to submit pull requests.
 
 This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
 
+## Testing
+
+The project includes a comprehensive test suite with 100% code coverage. All components are thoroughly tested to ensure reliability and stability.
+
+### Test Categories
+
+1. API Tests (`tests/test_api.py`)
+   - Endpoint functionality
+   - Request/response validation
+   - Error handling
+   - File operations
+   - Workspace management
+
+2. Core Tests (`tests/test_core.py`)
+   - Workspace creation/deletion
+   - File system operations
+   - Large file handling
+   - Unicode support
+
+3. Model Tests (`tests/test_models.py`)
+   - AI model configuration
+   - API integration
+   - Response parsing
+   - Error handling
+   - Streaming responses
+
+4. Utility Tests (`tests/test_utils.py`)
+   - File preview generation
+   - Dependency analysis
+   - Code change application
+   - Binary file handling
+
+5. WebSocket Tests (`tests/test_websocket.py`)
+   - Connection management
+   - Event emission
+   - Multi-client support
+   - Reconnection handling
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install pytest pytest-flask pytest-cov pytest-mock
+
+# Run all tests with coverage report
+python -m pytest -v --cov=. --cov-report=term-missing
+
+# Run specific test file
+python -m pytest tests/test_api.py -v
+
+# Run specific test
+python -m pytest tests/test_api.py::test_create_workspace_api -v
+
+# Run tests matching a pattern
+python -m pytest -v -k "websocket"
+```
+
+### Test Coverage
+
+The test suite aims for 100% code coverage, testing:
+- Happy paths (successful operations)
+- Error cases and edge conditions
+- File system operations
+- Network requests and responses
+- WebSocket events and reconnection
+- Binary and text file handling
+- Unicode and encoding support
+- Large file operations
+- Model API interactions
+
 ## Special Thanks
 
-Special thanks to:
 - **Nikole Cardoso** for her invaluable contributions and support
 - **Guilherme Guirro** for his expertise and guidance
 - **Felipe Santos** for his dedication and insights

@@ -739,91 +739,75 @@ function appendErrorMessage(message) {
 function showApprovalModal(data) {
     const modal = document.getElementById('approvalModal');
     const preview = document.getElementById('changesPreview');
-    const modalTitle = modal.querySelector('.modal-header h2');
-    const footer = modal.querySelector('.modal-footer .flex');
+    const footer = modal.querySelector('.modal-footer > div');
     
-    // Reset modal content
-    modalTitle.textContent = data.title || 'Review Changes';
+    // Clear previous content
     preview.innerHTML = '';
     footer.innerHTML = '';
-
-    // If it's a file preview
-    if (data.isFilePreview) {
-        if (data.fileInfo) {
-            const fileInfo = document.createElement('div');
-            fileInfo.className = 'flex items-center gap-3 mb-6 p-4 bg-gray-700 rounded-lg';
-            fileInfo.innerHTML = `
-                <i class="${getFileIcon(data.fileInfo.name)} text-xl"></i>
-                <div>
-                    <h3 class="text-lg font-medium">${data.fileInfo.name}</h3>
-                    <p class="text-sm text-gray-400">${data.fileInfo.path}</p>
-                </div>
-            `;
-            preview.appendChild(fileInfo);
-        }
-
-        if (data.content) {
-            const editorDiv = document.createElement('div');
-            editorDiv.style.height = '500px';
-            editorDiv.className = 'relative bg-gray-900 rounded-lg';
-            
-            const textarea = document.createElement('textarea');
-            textarea.value = data.content;
-            editorDiv.appendChild(textarea);
-            preview.appendChild(editorDiv);
-
-            CodeMirror.fromTextArea(textarea, {
-                mode: getLanguageMode(data.fileInfo?.path || ''),
-                theme: 'monokai',
-                lineNumbers: true,
-                matchBrackets: true,
-                styleActiveLine: true,
-                scrollbarStyle: 'overlay',
-                readOnly: true
-            });
-
-            // Add close button for file preview
-            const closeBtn = document.createElement('button');
-            closeBtn.className = 'btn btn-secondary';
-            closeBtn.textContent = 'Close';
-            closeBtn.onclick = hideModal;
-            footer.appendChild(closeBtn);
-        }
-    } else {
-        // For code changes preview
-        if (data.explanation) {
-            appendExplanation(preview, data.explanation);
-        }
-
-        if (data.operations) {
-            data.operations.forEach(operation => {
-                appendOperation(preview, operation);
-            });
-            appendModalButtons(footer, data.operations);
-        }
-    }
-
+    
+    // Show modal immediately
     modal.classList.remove('hidden');
+    
+    // Process and display each operation immediately
+    data.operations.forEach(operation => {
+        const container = document.createElement('div');
+        container.className = 'mb-8 p-4 bg-gray-900 rounded-lg';
+        
+        appendOperationHeader(container, operation);
+        appendOperationContent(container, operation);
+        preview.appendChild(container);
+    });
+    
+    // Add modal buttons
+    appendModalButtons(footer, data.operations);
+    
+    // Initialize any CodeMirror instances
+    preview.querySelectorAll('pre code').forEach(block => {
+        const mode = block.className.replace('language-', '');
+        CodeMirror.fromTextArea(block, {
+            mode: mode,
+            theme: 'monokai',
+            readOnly: true,
+            lineNumbers: true,
+            matchBrackets: true,
+            styleActiveLine: true,
+            scrollbarStyle: 'overlay',
+            viewportMargin: Infinity,
+            lineWrapping: true
+        });
+    });
 }
 
-function appendExplanation(container, explanation) {
-    const explanationDiv = document.createElement('div');
-    explanationDiv.className = 'mb-6 p-4 bg-gray-700 rounded-lg';
-    explanationDiv.innerHTML = `
-        <h3 class="text-lg font-medium mb-2">Overview</h3>
-        <p class="text-gray-300">${explanation}</p>
-    `;
-    container.appendChild(explanationDiv);
+function appendOperationContent(container, operation) {
+    if (operation.type === 'file_edit') {
+        const diffContainer = document.createElement('div');
+        diffContainer.className = 'mt-4 bg-gray-800 rounded p-4 overflow-x-auto';
+        appendDiffView(diffContainer, operation.diff);
+        container.appendChild(diffContainer);
+    } else if (operation.type === 'file_create') {
+        const codeContainer = document.createElement('div');
+        codeContainer.className = 'mt-4 bg-gray-800 rounded p-4';
+        appendCodeEditor(codeContainer, operation);
+        container.appendChild(codeContainer);
+    }
 }
 
-function appendOperation(container, operation) {
-    const operationDiv = document.createElement('div');
-    operationDiv.className = 'mb-8 bg-gray-700 rounded-lg p-4';
+function appendDiffView(container, diff) {
+    const pre = document.createElement('pre');
+    const code = document.createElement('textarea');
+    code.className = 'language-diff';
+    code.value = diff;
+    pre.appendChild(code);
+    container.appendChild(pre);
+}
 
-    appendOperationHeader(operationDiv, operation);
-    appendOperationContent(operationDiv, operation);
-
-    container.appendChild(operationDiv);
+function appendCodeEditor(container, operation) {
+    const pre = document.createElement('pre');
+    const code = document.createElement('textarea');
+    code.className = `language-${getLanguageMode(operation.path)}`;
+    code.value = operation.content;
+    pre.appendChild(code);
+    container.appendChild(pre);
 }
 
 function appendOperationHeader(container, operation) {
@@ -860,69 +844,6 @@ function getOperationIcon(type) {
 
 function formatOperationTitle(operation) {
     return `${operation.type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}: ${operation.path}`;
-}
-
-function appendOperationContent(container, operation) {
-    if (operation.type === 'edit_file' && operation.diff) {
-        appendDiffView(container, operation.diff);
-    } else if (operation.content) {
-        // For new files or files without diff
-        const codeDiv = document.createElement('div');
-        codeDiv.className = 'bg-gray-900 rounded-lg p-4 font-mono text-sm whitespace-pre overflow-x-auto';
-        
-        // Clean up the content
-        let code = operation.content.trim()
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-            
-        // Get language for syntax highlighting
-        const language = getLanguageMode(operation.path);
-        codeDiv.innerHTML = `<code class="language-${language}">${code}</code>`;
-        container.appendChild(codeDiv);
-    }
-}
-
-function appendDiffView(container, diff) {
-    const diffDiv = document.createElement('div');
-    diffDiv.className = 'bg-gray-900 rounded-lg p-4 font-mono text-sm whitespace-pre';
-    
-    const formattedDiff = diff.split('\n').map(line => {
-        if (line.startsWith('+')) {
-            return `<span class="text-green-500">${escapeHtml(line)}</span>`;
-        } else if (line.startsWith('-')) {
-            return `<span class="text-red-500">${escapeHtml(line)}</span>`;
-        } else if (line.startsWith('@@')) {
-            return `<span class="text-gray-500">${escapeHtml(line)}</span>`;
-        } else {
-            return `<span class="text-gray-300">${escapeHtml(line)}</span>`;
-        }
-    }).join('\n');
-    
-    diffDiv.innerHTML = formattedDiff;
-    container.appendChild(diffDiv);
-}
-
-function appendCodeEditor(container, operation) {
-    const editorDiv = document.createElement('div');
-    editorDiv.style.height = '400px';
-    editorDiv.className = 'relative';
-    
-    const textarea = document.createElement('textarea');
-    textarea.value = operation.content;
-    editorDiv.appendChild(textarea);
-    container.appendChild(editorDiv);
-
-    CodeMirror.fromTextArea(textarea, {
-        mode: getLanguageMode(operation.path),
-        theme: 'monokai',
-        lineNumbers: true,
-        matchBrackets: true,
-        styleActiveLine: true,
-        scrollbarStyle: 'overlay',
-        readOnly: true
-    });
 }
 
 function appendModalButtons(footer, operations) {
