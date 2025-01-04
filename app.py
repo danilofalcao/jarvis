@@ -478,39 +478,13 @@ IMPORTANT: Return the JSON object directly, not inside a code block."""
 
         elif model_id == 'codestral-mamba':
             try:
-                # Try streaming first
+                # Add format instructions to the system prompt
+                mamba_system_prompt = system_prompt + "\nIMPORTANT: Your response must be a valid JSON object with 'explanation' and 'operations' fields."
+                
                 response = client.chat.completions.create(
                     model=model_config['models']['code'],
                     messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": analysis_prompt}
-                    ],
-                    stream=True,
-                    max_tokens=4000,
-                    temperature=0.7
-                )
-                
-                response_chunks = []
-                tokens_received = 0
-                for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        response_chunks.append(content)
-                        tokens_received += len(content.split())
-                        socketio.emit('progress', {
-                            'message': f'Received {tokens_received} tokens...',
-                            'tokens': tokens_received
-                        })
-                
-                full_text = ''.join(response_chunks)
-                
-            except Exception as codestral_error:
-                print(f"Codestral-Mamba streaming error, trying non-streaming: {str(codestral_error)}")
-                # Fallback to non-streaming request
-                response = client.chat.completions.create(
-                    model=model_config['models']['code'],
-                    messages=[
-                        {"role": "system", "content": system_prompt},
+                        {"role": "system", "content": mamba_system_prompt},
                         {"role": "user", "content": analysis_prompt}
                     ],
                     stream=False,
@@ -520,9 +494,27 @@ IMPORTANT: Return the JSON object directly, not inside a code block."""
                 
                 if response.choices and response.choices[0].message.content:
                     full_text = response.choices[0].message.content
+                    # Try to parse and validate the response
+                    try:
+                        result = json.loads(full_text)
+                        if not isinstance(result, dict) or 'operations' not in result:
+                            # Add missing fields if needed
+                            if not isinstance(result, dict):
+                                result = {"operations": []}
+                            if 'explanation' not in result:
+                                result['explanation'] = "Changes requested by the user"
+                            full_text = json.dumps(result)
+                    except json.JSONDecodeError:
+                        print("Invalid JSON from Codestral-Mamba, falling back to DeepSeek")
+                        return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
                 else:
-                    print("Codestral-Mamba response failed, falling back to DeepSeek")
+                    print("Empty response from Codestral-Mamba, falling back to DeepSeek")
                     return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
+                    
+            except Exception as codestral_error:
+                print(f"Codestral-Mamba error: {str(codestral_error)}")
+                print("Falling back to DeepSeek")
+                return get_code_suggestion(prompt, files_content, workspace_context, "deepseek")
 
         elif model_id == 'claude':
             response = client.messages.create(
